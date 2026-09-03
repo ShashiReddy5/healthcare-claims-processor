@@ -1,256 +1,89 @@
 # healthcare-claims-processor
-HIPAA-compliant claims adjudication microservice with HL7/FHIR integration, PHI encryption, and Spring Batch EDI processing
-# Healthcare Claims Processor
 
-[![Java](https://img.shields.io/badge/Java-8-ED8B00?style=flat&logo=java)](https://www.java.com)
-[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-2.7-6DB33F?style=flat&logo=spring-boot)](https://spring.io/projects/spring-boot)
-[![HIPAA](https://img.shields.io/badge/HIPAA-Compliant-009900?style=flat)](https://www.hhs.gov/hipaa)
-[![AWS](https://img.shields.io/badge/AWS-ECS%20|%20RDS%20|%20S3-FF9900?style=flat&logo=amazon-aws)](https://aws.amazon.com)
-[![React](https://img.shields.io/badge/React-17-61DAFB?style=flat&logo=react)](https://reactjs.org)
+A small, self-contained Spring Boot 3 microservice that models a simplified claims adjudication API: submit a claim, have it auto-approved, denied, or pended for manual review based on the billed amount, and fetch it back later — with the member identifier and diagnosis code encrypted at rest.
 
-HIPAA-compliant claims adjudication microservice with HL7/FHIR integration, PHI field-level encryption, AWS cloud-native deployment, and Spring Batch processing for EDI transactions.
+This is a reference/demo implementation, not a HIPAA-compliant production system. It's built to run with zero external setup (no database server, no message broker) while still showing a realistic layout: layered packages, JWT-secured endpoints, real field-level encryption, validation, pagination, and clear seams for the pieces that a real payer platform would need and this one doesn't implement.
 
-Inspired by healthcare insurance platform architecture built at Wipro for a major insurance payer client.
+## What it actually does
 
----
+- `POST /api/claims` — submit a claim (`memberId`, `diagnosisCode`, `billedAmount`). Claims at or under $500 are auto-approved for the full billed amount; claims over $50,000 are denied as exceeding the policy limit; everything in between is pended as `PENDING_REVIEW`.
+- `GET /api/claims/{claimId}` — fetch a single claim, with the member ID and diagnosis code decrypted back for display.
+- `GET /api/claims?status=...` — paginated list, optionally filtered by status.
+- `POST /api/auth/login` — exchanges a demo credential (`examiner` / `demo-password`) for a JWT used as a Bearer token on the endpoints above.
+- `GET /actuator/health` — health check.
 
-## Architecture Overview
+## Tech stack (what's really in the repo)
 
-```
-┌──────────────────────────────────────────────────────┐
-│         React Healthcare Portal (Claims Examiner)     │
-│         (real-time status · prior auth · eligibility) │
-└────────────────────────┬─────────────────────────────┘
-                         │ REST API (HTTPS + JWT)
-          ┌──────────────▼───────────────┐
-          │   Claims Processor Service    │
-          │   (Spring Boot / Java 8)      │
-          │   - HL7/FHIR parsing          │
-          │   - Business rule engine      │
-          │   - PHI encryption            │
-          └──────┬───────────────┬────────┘
-                 │               │
-    ┌────────────▼───┐  ┌────────▼──────────────┐
-    │  MySQL (RDS)   │  │  Spring Batch Jobs     │
-    │  PHI encrypted │  │  EDI · settlement      │
-    └────────────────┘  └───────────────────────┘
-                 │
-    ┌────────────▼────────────┐
-    │  AWS S3 (PHI storage)   │
-    │  server-side encryption │
-    │  + audit logging        │
-    └─────────────────────────┘
-```
-
----
-
-## Key Features
-
-- **HIPAA compliance** — field-level PHI encryption, comprehensive audit logging, role-based access to patient data
-- **HL7/FHIR integration** — parses and validates HL7 v2 messages and FHIR R4 resources for payer/provider interoperability
-- **Claims adjudication** — Java business rule engine automates routine approvals, routes complex cases for manual review
-- **Spring Batch processing** — EDI 837/835 transaction processing, claims settlement reconciliation, compliance reporting
-- **React portal** — real-time claims status, prior authorisation tracking, eligibility verification for claims examiners
-- **PHI-safe S3 storage** — server-side encryption (SSE-KMS) for all patient document storage with access audit trails
-
----
-
-## Tech Stack
-
-| Component | Technology |
+| Layer | Choice |
 |---|---|
-| Language | Java 8 |
-| Framework | Spring Boot 2.7, Spring MVC, Spring Security, Spring Batch |
-| Persistence | Spring Data JPA, Hibernate, MySQL (AWS RDS) |
-| Security | OAuth2, JWT, Spring Security, field-level AES-256 encryption |
-| Healthcare | HL7 v2, FHIR R4 (HAPI FHIR library) |
-| Frontend | React 17, TypeScript, JavaScript |
-| Cloud | AWS (EC2, ECS, RDS, S3 + SSE-KMS, Route53, CloudWatch, IAM) |
-| Batch | Spring Batch — EDI 837/835 processing |
-| Testing | JUnit 4/5, Mockito, WireMock |
+| Language | Java 21 |
+| Framework | Spring Boot 3.3.4 (Web, Data JPA, Security, Validation, Actuator) |
+| Persistence | H2, in-memory |
+| PHI protection | Real AES-256-GCM field-level encryption/decryption for `memberId` and `diagnosisCode` before they're persisted |
+| Auth | Stateless JWT (HS256, `io.jsonwebtoken`/jjwt) via a custom filter |
+| Audit | A logging-based `AuditLogger` seam |
+| Tests | JUnit 5 + Mockito + AssertJ |
+| Build | Maven |
 
----
+## Project structure
 
-## Core Code Samples
-
-### PHI Field-Level Encryption
-
-```java
-@Component
-public class PhiEncryptionService {
-
-    @Value("${encryption.key}")
-    private String encryptionKey;
-
-    private static final String ALGORITHM = "AES/GCM/NoPadding";
-
-    /**
-     * Encrypts PHI fields before persisting to database.
-     * Required for HIPAA Technical Safeguard compliance.
-     */
-    public String encrypt(String plainText) {
-        try {
-            SecretKeySpec keySpec = new SecretKeySpec(
-                Base64.getDecoder().decode(encryptionKey), "AES");
-            Cipher cipher = Cipher.getInstance(ALGORITHM);
-            byte[] iv = new byte[12];
-            new SecureRandom().nextBytes(iv);
-            cipher.init(Cipher.ENCRYPT_MODE, keySpec, new GCMParameterSpec(128, iv));
-            byte[] encrypted = cipher.doFinal(plainText.getBytes(StandardCharsets.UTF_8));
-            // prepend IV for decryption
-            byte[] combined = new byte[iv.length + encrypted.length];
-            System.arraycopy(iv, 0, combined, 0, iv.length);
-            System.arraycopy(encrypted, 0, combined, iv.length, encrypted.length);
-            return Base64.getEncoder().encodeToString(combined);
-        } catch (Exception e) {
-            throw new PhiEncryptionException("Failed to encrypt PHI field", e);
-        }
-    }
-}
+```
+healthcare-claims-processor/
+├── pom.xml
+└── src/
+    ├── main/
+    │   ├── java/com/shashireddy/claims/
+    │   │   ├── ClaimsProcessorApplication.java
+    │   │   ├── model/Claim.java, ClaimStatus.java
+    │   │   ├── repository/ClaimRepository.java
+    │   │   ├── dto/ClaimDtos.java
+    │   │   ├── crypto/PhiEncryptionService.java
+    │   │   ├── service/ClaimsAdjudicationService.java, AuditLogger.java
+    │   │   ├── security/JwtService.java, SecurityConfig.java
+    │   │   └── controller/AuthController.java, ClaimsController.java
+    │   └── resources/application.yml
+    └── test/java/com/shashireddy/claims/service/ClaimsAdjudicationServiceTest.java
 ```
 
-### Claims Adjudication Service
-
-```java
-@Service
-@Slf4j
-public class ClaimsAdjudicationService {
-
-    private final ClaimsRepository claimsRepository;
-    private final EligibilityService eligibilityService;
-    private final PhiEncryptionService encryptionService;
-    private final AuditLogger auditLogger;
-
-    @Transactional
-    public AdjudicationResult adjudicateClaim(ClaimSubmission submission) {
-        auditLogger.log("CLAIM_RECEIVED", submission.getClaimId(), getCurrentUser());
-
-        // validate patient eligibility
-        EligibilityResult eligibility = eligibilityService
-            .checkEligibility(submission.getMemberId(), submission.getServiceDate());
-
-        if (!eligibility.isActive()) {
-            return AdjudicationResult.denied(submission.getClaimId(),
-                DenialReason.MEMBER_INELIGIBLE);
-        }
-
-        // apply payer-specific business rules
-        RuleEvaluationResult ruleResult = evaluateBusinessRules(submission, eligibility);
-
-        if (ruleResult.isAutoApprove()) {
-            return approveClaim(submission, ruleResult.getAllowedAmount());
-        } else if (ruleResult.isDeny()) {
-            return denyClaim(submission, ruleResult.getDenialReason());
-        } else {
-            // route for manual review
-            return pendClaim(submission, ruleResult.getPendReason());
-        }
-    }
-
-    private AdjudicationResult approveClaim(ClaimSubmission submission,
-                                             BigDecimal allowedAmount) {
-        Claim claim = Claim.builder()
-            .claimId(submission.getClaimId())
-            // encrypt PHI before persisting
-            .memberIdEncrypted(encryptionService.encrypt(submission.getMemberId()))
-            .diagnosisCodeEncrypted(encryptionService.encrypt(submission.getDiagnosisCode()))
-            .allowedAmount(allowedAmount)
-            .status(ClaimStatus.APPROVED)
-            .adjudicatedAt(Instant.now())
-            .build();
-
-        claimsRepository.save(claim);
-        auditLogger.log("CLAIM_APPROVED", submission.getClaimId(), getCurrentUser());
-        return AdjudicationResult.approved(submission.getClaimId(), allowedAmount);
-    }
-}
-```
-
-### Spring Batch EDI 837 Job
-
-```java
-@Configuration
-public class Edi837BatchConfig {
-
-    @Bean
-    public Job edi837ProcessingJob(JobRepository jobRepository,
-                                    Step parseStep,
-                                    Step adjudicateStep,
-                                    Step settlementStep) {
-        return new JobBuilder("edi837ProcessingJob", jobRepository)
-            .start(parseStep)
-            .next(adjudicateStep)
-            .next(settlementStep)
-            .build();
-    }
-
-    @Bean
-    @StepScope
-    public FlatFileItemReader<EdiTransaction> edi837Reader(
-            @Value("#{jobParameters['input.file']}") String inputFile) {
-        return new FlatFileItemReaderBuilder<EdiTransaction>()
-            .name("edi837Reader")
-            .resource(new FileSystemResource(inputFile))
-            .lineMapper(new Edi837LineMapper())
-            .build();
-    }
-
-    @Bean
-    public ItemProcessor<EdiTransaction, ClaimSubmission> edi837Processor() {
-        return transaction -> {
-            // parse EDI 837 segments into domain model
-            ClaimSubmission submission = Edi837Parser.parse(transaction);
-            // validate required fields
-            Edi837Validator.validate(submission);
-            return submission;
-        };
-    }
-}
-```
-
-### FHIR Patient Resource Parsing
-
-```java
-@Service
-public class FhirPatientService {
-
-    private final FhirContext fhirContext = FhirContext.forR4();
-
-    public PatientDto parsePatientResource(String fhirJson) {
-        IParser parser = fhirContext.newJsonParser();
-        Patient patient = parser.parseResource(Patient.class, fhirJson);
-
-        return PatientDto.builder()
-            .resourceId(patient.getIdElement().getIdPart())
-            .familyName(patient.getNameFirstRep().getFamily())
-            .givenName(patient.getNameFirstRep().getGivenAsSingleString())
-            .dateOfBirth(patient.getBirthDate())
-            .gender(patient.getGender() != null
-                ? patient.getGender().getDisplay() : null)
-            .build();
-    }
-}
-```
-
----
-
-## Running Locally
+## Running it locally
 
 ```bash
-# start dependencies
-docker-compose up -d mysql
+./mvnw spring-boot:run
+```
 
-# run the service
-./mvnw spring-boot:run -Dspring-boot.run.profiles=local
+The service starts on port 8080 with an in-memory H2 database — no external services required.
 
-# run batch EDI job manually
-./mvnw spring-boot:run \
-  -Dspring-boot.run.arguments="--spring.batch.job.names=edi837ProcessingJob \
-  --input.file=src/test/resources/sample-837.edi"
+```bash
+# get a token
+curl -X POST localhost:8080/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"examiner","password":"demo-password"}'
 
-# run tests
+# submit a claim
+curl -X POST localhost:8080/api/claims \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"memberId":"member-123","diagnosisCode":"E11.9","billedAmount":120.00}'
+```
+
+Run the tests with:
+
+```bash
 ./mvnw test
 ```
 
-> **Note:** PHI encryption key is managed via AWS KMS in production. Locally, set `ENCRYPTION_KEY` environment variable to a Base64-encoded 32-byte key for testing only.
+## What's simplified, and how it maps to a real deployment
 
+This repo intentionally trades regulatory and production concerns for something that's honest, runnable, and easy to read end-to-end. It is **not** HIPAA-compliant as-is — real PHI handling needs a lot more than one encrypted field.
+
+- **PHI encryption**: `memberId` and `diagnosisCode` are genuinely AES-256-GCM encrypted before being written to the database — that part is real. What's missing for a real deployment: encryption of every PHI-adjacent field, KMS-backed key management and rotation instead of a config value, and encryption in transit enforced at the infra layer.
+- **HL7/FHIR**: not implemented. A real payer/provider integration would add a parsing layer (e.g. HAPI FHIR) in front of `ClaimSubmissionRequest` to translate inbound HL7 v2 messages or FHIR resources into this model.
+- **Spring Batch / EDI 837-835**: not implemented. Bulk claims intake and settlement reconciliation would be a separate batch module reading EDI files and calling into `ClaimsAdjudicationService` per claim.
+- **Eligibility & business rules**: the $500 / $50,000 thresholds are a placeholder for a real rules engine that checks member eligibility, contracted rates, and prior authorizations.
+- **Audit logging**: `AuditLogger` writes structured log lines. A regulated deployment needs an immutable, queryable audit store — the interface is the seam for that.
+- **Auth**: a single hard-coded demo credential issues a real JWT, so the rest of the API is genuinely JWT-secured. A real deployment swaps `AuthController` for a call to an actual identity provider — `JwtService` and the filter chain stay the same either way.
+- **Database**: H2 in-memory instead of a managed Postgres/MySQL instance. The JPA layer doesn't care.
+
+## License
+
+MIT
