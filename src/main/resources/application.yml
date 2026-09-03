@@ -1,0 +1,45 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: healthcare-claims-processor
+
+  # In-memory H2 by default so the service runs with zero external setup.
+  # Point these at Postgres/MySQL in application-prod.yml (or env vars) for
+  # a real deployment - the JPA layer doesn't change.
+  datasource:
+    url: jdbc:h2:mem:claims;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+security:
+  jwt:
+    secret: ${JWT_SECRET:dev-only-secret-do-not-use-in-production-please}
+
+claims:
+  encryption:
+    # 32 zero bytes, base64-encoded - fine for local/dev use only. A real
+    # deployment generates a real key and manages it via AWS KMS/Vault/etc.
+    key: ${ENCRYPTION_KEY:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+
+logging:
+  level:
+    com.shashireddy.claims: INFO
